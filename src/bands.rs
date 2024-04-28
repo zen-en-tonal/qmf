@@ -3,7 +3,7 @@ use num_traits::Float;
 
 use crate::{
     haar::HaarFilter,
-    sampling::{DownSampling, UpSampling},
+    sampling::{DownSampler, UpSampler},
 };
 
 struct Band<T>
@@ -14,6 +14,11 @@ where
     in_highpass_filter: HaarFilter<T>,
     out_lowpass_filter: HaarFilter<T>,
     out_highpass_filter: HaarFilter<T>,
+
+    low_upsampler: UpSampler<T>,
+    low_downsampler: DownSampler,
+    high_upsampler: UpSampler<T>,
+    high_downsampler: DownSampler,
 }
 
 impl<T> Band<T>
@@ -28,10 +33,15 @@ where
             in_highpass_filter: HaarFilter::new(-0.5, 0.5),
             out_lowpass_filter: HaarFilter::new(1., 1.),
             out_highpass_filter: HaarFilter::new(1., -1.),
+
+            low_upsampler: UpSampler::with_zero(2),
+            low_downsampler: DownSampler::new(2),
+            high_upsampler: UpSampler::with_zero(2),
+            high_downsampler: DownSampler::new(2),
         }
     }
 
-    pub fn analysis(&mut self, xs: &[T]) -> (impl Iterator<Item = T>, impl Iterator<Item = T>) {
+    pub fn analysis(&mut self, xs: &[T]) -> (alloc::vec::Vec<T>, alloc::vec::Vec<T>) {
         let mut low = alloc::vec::Vec::from(xs);
         let mut high = alloc::vec::Vec::from(xs);
         for (l, h) in core::iter::zip(low.iter_mut(), high.iter_mut()) {
@@ -39,15 +49,15 @@ where
             *h = self.in_highpass_filter.consume(*h);
         }
         (
-            DownSampling::new(low.into_iter(), 2),
-            DownSampling::new(high.into_iter(), 2),
+            self.low_downsampler.iter(low.into_iter()).collect(),
+            self.high_downsampler.iter(high.into_iter()).collect(),
         )
     }
 
     pub fn synthesis(&mut self, low: &[T], high: &[T], out: &mut [T]) {
         for ((l, h), o) in core::iter::zip(
-            UpSampling::with_zero(low.iter().copied(), 2),
-            UpSampling::with_zero(high.iter().copied(), 2),
+            self.low_upsampler.iter(low.iter().copied()),
+            self.high_upsampler.iter(high.iter().copied()),
         )
         .zip(out.iter_mut())
         {
@@ -93,9 +103,7 @@ where
     where
         F: FnMut(&mut [T], usize),
     {
-        let (lows, highs) = self.bands[count].analysis(buffer);
-        let mut lows = lows.collect::<alloc::vec::Vec<T>>();
-        let mut highs = highs.collect::<alloc::vec::Vec<T>>();
+        let (mut lows, mut highs) = self.bands[count].analysis(buffer);
 
         if count + 1 >= N {
             closure(lows.as_mut_slice(), count + 1);
@@ -127,12 +135,14 @@ mod tests {
 
     #[test]
     fn test_bands_reconstruct() {
-        let mut bands: Bands<f64, 6> = Bands::new();
-        let mut in_data = vec![1.; 1024];
-        let out_data = in_data.clone();
+        let mut bands: Bands<f64, 3> = Bands::new();
 
+        let mut in_data = vec![1.; 128];
         bands.process(in_data.as_mut_slice(), |_d, _c| {});
+        assert_eq!(vec![1.; 120], in_data[bands.delay()..]);
 
-        assert_eq!(in_data, out_data);
+        let mut in_data = vec![1.; 128];
+        bands.process(in_data.as_mut_slice(), |_d, _c| {});
+        assert_eq!(vec![1.; 128], in_data);
     }
 }

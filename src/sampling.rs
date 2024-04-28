@@ -1,35 +1,49 @@
 use num_traits::Num;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct UpSampling<I, T>
+pub struct UpSampler<T>
 where
     T: Num,
 {
-    iter: I,
     scale: usize,
     with: T,
     count: usize,
 }
 
-impl<I, T> UpSampling<I, T>
+impl<T> UpSampler<T>
 where
     T: Num,
 {
-    pub fn new(iter: I, scale: usize, with: T) -> UpSampling<I, T> {
-        UpSampling {
-            iter,
+    pub fn new(scale: usize, with: T) -> UpSampler<T> {
+        UpSampler {
             scale,
             with,
             count: 0,
         }
     }
 
-    pub fn with_zero(iter: I, scale: usize) -> UpSampling<I, T> {
-        UpSampling::new(iter, scale, T::zero())
+    pub fn with_zero(scale: usize) -> UpSampler<T> {
+        UpSampler::new(scale, T::zero())
+    }
+
+    pub fn iter<I: Iterator<Item = T>>(&mut self, iter: I) -> UpSampling<'_, I, T> {
+        UpSampling {
+            iter,
+            sampler: self,
+        }
     }
 }
 
-impl<I, T> Iterator for UpSampling<I, T>
+#[derive(Debug, PartialEq, Eq)]
+pub struct UpSampling<'a, I, T>
+where
+    T: Num,
+{
+    iter: I,
+    sampler: &'a mut UpSampler<T>,
+}
+
+impl<'a, I, T> Iterator for UpSampling<'a, I, T>
 where
     I: Iterator<Item = T>,
     T: Num + Clone,
@@ -37,38 +51,59 @@ where
     type Item = T;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let ret = if self.count % self.scale == 0 {
+        let ret = if self.sampler.count % self.sampler.scale == 0 {
             self.iter.next()
         } else {
-            Some(self.with.clone())
+            Some(self.sampler.with.clone())
         };
-        self.count = (self.count + 1) % self.scale;
+        if ret.is_some() {
+            self.sampler.count = (self.sampler.count + 1) % self.sampler.scale;
+        }
         ret
     }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct DownSampling<I> {
-    iter: I,
+pub struct DownSampler {
     scale: usize,
+    count: usize,
 }
 
-impl<I> DownSampling<I> {
-    pub fn new(iter: I, scale: usize) -> Self {
-        Self { iter, scale }
+impl DownSampler {
+    pub fn new(scale: usize) -> Self {
+        Self { scale, count: 0 }
+    }
+
+    pub fn iter<I: Iterator>(&mut self, iter: I) -> DownSampling<'_, I> {
+        DownSampling {
+            iter,
+            sampler: self,
+        }
     }
 }
 
-impl<I> Iterator for DownSampling<I>
+#[derive(Debug, PartialEq, Eq)]
+pub struct DownSampling<'a, I> {
+    iter: I,
+    sampler: &'a mut DownSampler,
+}
+
+impl<'a, I> Iterator for DownSampling<'a, I>
 where
     I: Iterator,
 {
     type Item = I::Item;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let ret = self.iter.next();
-        for _ in 0..(self.scale - 1) {
-            let _ = self.iter.next();
+        let mut ret: Option<Self::Item> = None;
+        for _ in 0..self.sampler.scale {
+            let Some(item) = self.iter.next() else {
+                break;
+            };
+            if self.sampler.count == 0 {
+                ret = Some(item);
+            }
+            self.sampler.count = (self.sampler.count + 1) % self.sampler.scale;
         }
         ret
     }
@@ -76,19 +111,27 @@ where
 
 #[cfg(test)]
 mod tests {
-    use crate::sampling::DownSampling;
-
-    use super::UpSampling;
+    use crate::sampling::{DownSampler, UpSampler};
 
     #[test]
     fn test_upsampling() {
         let vec = vec![1, 2, 3];
-        let mut iter = UpSampling::with_zero(vec.into_iter(), 2);
+        let mut sampler = UpSampler::with_zero(2);
+        let mut iter = sampler.iter(vec.into_iter());
         assert_eq!(Some(1), iter.next());
         assert_eq!(Some(0), iter.next());
         assert_eq!(Some(2), iter.next());
         assert_eq!(Some(0), iter.next());
         assert_eq!(Some(3), iter.next());
+
+        let vec = vec![4, 5, 6];
+        let mut iter = sampler.iter(vec.into_iter());
+        assert_eq!(Some(0), iter.next());
+        assert_eq!(Some(4), iter.next());
+        assert_eq!(Some(0), iter.next());
+        assert_eq!(Some(5), iter.next());
+        assert_eq!(Some(0), iter.next());
+        assert_eq!(Some(6), iter.next());
         assert_eq!(Some(0), iter.next());
         assert_eq!(None, iter.next());
     }
@@ -96,9 +139,15 @@ mod tests {
     #[test]
     fn test_downsampling() {
         let vec = vec![1, 2, 3];
-        let mut iter = DownSampling::new(vec.into_iter(), 2);
+        let mut sampler = DownSampler::new(2);
+        let mut iter = sampler.iter(vec.into_iter());
         assert_eq!(Some(1), iter.next());
         assert_eq!(Some(3), iter.next());
+        assert_eq!(None, iter.next());
+
+        let vec = vec![4, 5, 6];
+        let mut iter = sampler.iter(vec.into_iter());
+        assert_eq!(Some(5), iter.next());
         assert_eq!(None, iter.next());
     }
 }
